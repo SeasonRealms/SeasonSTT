@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <IsPackable>true</IsPackable>
+
+    <AssemblyName>SeasonSTT</AssemblyName>
+    <RootNamespace>SeasonSTT</RootNamespace>
+    <PackageId>SeasonSTT</PackageId>
+    <Title>SeasonSTT</Title>
+    <Authors>SeasonRealms</Authors>
+    <Company>SeasonRealms</Company>
+    <Product>SeasonSTT</Product>
+    <Version>0.1.0</Version>
+    <Description>SeasonSTT is a lightweight .NET speech-to-text library for Whisper ONNX model bundles with a simple file-path based API.</Description>
+    <PackageTags>stt;speech-to-text;whisper;onnx;asr;audio;transcription</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageProjectUrl>https://github.com/SeasonRealms/SeasonSTT</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SeasonRealms/SeasonSTT</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <Copyright>Copyright (c) 2026 SeasonRealms</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.26.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\LICENSE" Pack="true" PackagePath="\" Link="LICENSE" Visible="false" />
+  </ItemGroup>
+
+</Project>
