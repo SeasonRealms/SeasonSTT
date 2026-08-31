@@ -10,13 +10,13 @@
     <IsPackable>true</IsPackable>
 
     <AssemblyName>SeasonSTT</AssemblyName>
-    <RootNamespace>SeasonSTT</RootNamespace>
+    <RootNamespace>Season.STT</RootNamespace>
     <PackageId>SeasonSTT</PackageId>
     <Title>SeasonSTT</Title>
     <Authors>SeasonRealms</Authors>
     <Company>SeasonRealms</Company>
     <Product>SeasonSTT</Product>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Description>SeasonSTT is a lightweight .NET speech-to-text library for Whisper ONNX model bundles with a simple file-path based API.</Description>
     <PackageTags>stt;speech-to-text;whisper;onnx;asr;audio;transcription</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 // https://github.com/SeasonRealms/SeasonSTT
 
-namespace SeasonSTT;
+namespace Season.STT;
 
 /// <summary>
 /// Provides a simple Whisper ONNX inference entry point for WAV PCM16 audio.
@@ -10,71 +10,26 @@ namespace SeasonSTT;
 public static class Whisper
 {
     /// <summary>
-    /// Runs speech-to-text inference with a Whisper ONNX model bundle.
+    /// One-shot speech-to-text inference that loads the model files and runs a
+    /// single transcription. Prefer <see cref="WhisperContext"/> for repeated
+    /// transcriptions so the sessions are not reloaded every call.
     /// </summary>
-    /// <param name="model">Directory that contains the Whisper model files and `season-whisper.json`.</param>
+    /// <param name="jsonPath">Path to `season-whisper.json`.</param>
+    /// <param name="encoderPath">Path to the encoder ONNX model.</param>
+    /// <param name="encoderDataPath">Path to the encoder external data; must sit next to <paramref name="encoderPath"/>.</param>
+    /// <param name="decoderPath">Path to the decoder ONNX model.</param>
     /// <param name="voice">WAV PCM16 audio bytes.</param>
     /// <param name="defaultLanguage">Default language code, for example <c>en</c>.</param>
+    /// <param name="provider">ONNX Runtime execution provider, for example <c>cpu</c>.</param>
     /// <returns>The decoded transcription text.</returns>
-    public static string Detect(string model, byte[] voice, string defaultLanguage)
+    public static string Detect(string jsonPath, string encoderPath, string encoderDataPath, string decoderPath, byte[] voice, string defaultLanguage, string provider = "cpu")
     {
-        var config = LoadConfig($"{model}/season-whisper.json");
+        using var context = WhisperContext.Load(jsonPath, encoderPath, encoderDataPath, decoderPath, provider);
 
-        config.Provider = "cpu";
-
-        config.DefaultLanguage = defaultLanguage;
-
-        var audio = ResampleToTargetRate(
-            ReadWavPcm16(voice, out int sourceSampleRate),
-            sourceSampleRate,
-            config.SampleRate,
-            config.MaxSamples);
-
-        using var encoderSession = CreateSession(model, config.EncoderModel, config.Provider);
-        using var decoderSession = CreateSession(model, config.DecoderModel, config.Provider);
-        var inputFeatures = CreateInputFeatures(model, audio, config);
-
-        using var encoderResults = encoderSession.Run(new[]
-        {
-            NamedOnnxValue.CreateFromTensor(config.EncoderInput, inputFeatures)
-        });
-        var encoderHiddenStates = CopyFloatTensor(encoderResults, config.EncoderOutput);
-
-        string? language = string.IsNullOrWhiteSpace(config.Language)
-            ? (string.IsNullOrWhiteSpace(config.DefaultLanguage) ? null : config.DefaultLanguage)
-            : config.Language;
-
-        var tokenIds = new List<long> { config.Sot };
-        if (!string.IsNullOrWhiteSpace(language) &&
-            config.Languages.TryGetValue(language, out long languageToken))
-        {
-            tokenIds.Add(languageToken);
-        }
-
-        tokenIds.Add(config.Transcribe);
-        tokenIds.Add(config.NoTime);
-        int promptTokenCount = tokenIds.Count;
-
-        for (int i = 0; i < config.MaxTokens; i++)
-        {
-            var decoderInputIds = new DenseTensor<long>(tokenIds.ToArray(), new[] { 1, tokenIds.Count });
-            using var decoderResults = decoderSession.Run(new[]
-            {
-                NamedOnnxValue.CreateFromTensor(config.DecoderInput, decoderInputIds),
-                NamedOnnxValue.CreateFromTensor(config.DecoderEncoderInput, encoderHiddenStates)
-            });
-
-            int nextToken = ArgMaxLastLogit(GetTensor(decoderResults, config.DecoderOutput).AsTensor<float>());
-            if (nextToken == config.Eot)
-                break;
-
-            tokenIds.Add(nextToken);
-        }
-
-        return DecodeTokens(tokenIds.Skip(promptTokenCount), config).Trim();
+        return context.Detect(voice, defaultLanguage);
     }
 
-    static Config LoadConfig(string path)
+    internal static Config LoadConfig(string path)
     {
         var bytes = File.ReadAllBytes(path); // DeviceServices.Core.LoadFile(path);
 
@@ -84,11 +39,11 @@ public static class Whisper
             ?? throw new InvalidDataException($"Failed to read Whisper config: {path}");
     }
 
-    static DenseTensor<float> CreateInputFeatures(string modelDirectory, float[] audio, Config config)
+    internal static DenseTensor<float> CreateInputFeatures(string modelDirectory, float[] audio, Config config)
     {
         if (!string.IsNullOrWhiteSpace(config.PreprocessModel))  //DeviceServices.Core.LoadFileExists($"{modelDirectory}/{config.PreprocessModel}"))
         {
-            using var preprocessSession = CreateSession(modelDirectory, config.PreprocessModel, config.Provider);
+            using var preprocessSession = CreateSession($"{modelDirectory}/{config.PreprocessModel}", config.Provider);
             var waveform = new DenseTensor<float>(audio, new[] { 1, audio.Length });
             using var preprocessResults = preprocessSession.Run(new[]
             {
@@ -100,7 +55,7 @@ public static class Whisper
         return ComputeLogMelSpectrogram(audio, config);
     }
 
-    static InferenceSession CreateSession(string modelDirectory, string fileName, string? provider)
+    internal static InferenceSession CreateSession(string modelPath, string? provider)
     {
         var options = new SessionOptions
         {
@@ -109,7 +64,15 @@ public static class Whisper
 
         foreach (var methodName in GetProviderMethodNames(provider))
         {
-            var method = typeof(SessionOptions).GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
+            // Prefer the scalar overloads (e.g. AppendExecutionProvider_CUDA(int deviceId))
+            // and skip reference-typed options overloads (OrtCUDAProviderOptions,
+            // Dictionary<string, string>) so the default value factory below can fill them.
+            var method = typeof(SessionOptions)
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                .Where(m => m.Name == methodName)
+                .Where(m => m.GetParameters().All(p => p.ParameterType.IsValueType))
+                .OrderBy(m => m.GetParameters().Length)
+                .FirstOrDefault();
             if (method == null)
                 continue;
 
@@ -121,13 +84,14 @@ public static class Whisper
                 method.Invoke(options, args);
                 break;
             }
-            catch
+            catch (Exception ex)
             {
                 // Continue trying the next provider when the API is unavailable or native dependencies are missing.
+                Trace.WriteLine($"[Whisper] failed to append provider via `{methodName}`: {ex.Message}");
             }
         }
 
-        return new InferenceSession($"{modelDirectory}/{fileName}", options);
+        return new InferenceSession(modelPath, options);
 
         //using var stream = DeviceServices.Core.LoadFile($"{modelDirectory}/{fileName}");
         //return new InferenceSession(stream.ReadAllBytes(), options);
@@ -159,7 +123,7 @@ public static class Whisper
         };
     }
 
-    static DenseTensor<float> CopyFloatTensor(
+    internal static DenseTensor<float> CopyFloatTensor(
         IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results,
         string outputName)
     {
@@ -249,7 +213,7 @@ public static class Whisper
         }
     }
 
-    static DisposableNamedOnnxValue GetTensor(
+    internal static DisposableNamedOnnxValue GetTensor(
         IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results,
         string outputName)
     {
@@ -258,7 +222,7 @@ public static class Whisper
             : results.First(result => result.Name == outputName);
     }
 
-    static float[] ReadWavPcm16(byte[] bytes, out int sampleRate)
+    internal static float[] ReadWavPcm16(byte[] bytes, out int sampleRate)
     {
         using var stream = new MemoryStream(bytes);
         using var reader = new BinaryReader(stream);
@@ -327,7 +291,7 @@ public static class Whisper
         return samples;
     }
 
-    static float[] ResampleToTargetRate(float[] source, int sourceRate, int targetRate, int maxSamples)
+    internal static float[] ResampleToTargetRate(float[] source, int sourceRate, int targetRate, int maxSamples)
     {
         if (sourceRate <= 0 || targetRate <= 0)
             throw new ArgumentOutOfRangeException(nameof(sourceRate), "Sample rates must be greater than 0.");
@@ -357,7 +321,7 @@ public static class Whisper
         return output;
     }
 
-    static int ArgMaxLastLogit(Tensor<float> logits)
+    internal static int ArgMaxLastLogit(Tensor<float> logits)
     {
         var values = logits.ToArray();
         int vocabSize = logits.Dimensions[^1];
@@ -378,7 +342,7 @@ public static class Whisper
         return bestIndex;
     }
 
-    static string DecodeTokens(IEnumerable<long> tokenIds, Config config)
+    internal static string DecodeTokens(IEnumerable<long> tokenIds, Config config)
     {
         using var stream = new MemoryStream();
 
@@ -400,7 +364,7 @@ public static class Whisper
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    sealed class Config
+    internal sealed class Config
     {
         public string PreprocessModel { get; set; } = "preprocess_model.onnx";
         public string EncoderModel { get; set; } = "encoder_model.onnx";

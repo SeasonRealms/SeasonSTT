@@ -9,6 +9,7 @@ The current public API is intentionally small:
 - plain string transcription output
 - CPU-first execution for simple integration
 - Repository: [SeasonRealms/SeasonSTT](https://github.com/SeasonRealms/SeasonSTT)
+- Models: https://huggingface.co/SeasonEngine/Whisper
 
 ## Install
 
