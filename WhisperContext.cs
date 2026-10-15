@@ -5,6 +5,25 @@
 namespace Season.STT;
 
 /// <summary>
+/// Whisper decoder task, selected by the task token that follows the language
+/// token in the decoder prompt.
+/// </summary>
+public enum WhisperTask
+{
+    /// <summary>
+    /// Transcribe the speech in its spoken language using the
+    /// <c>&lt;|transcribe|&gt;</c> task token.
+    /// </summary>
+    Transcribe,
+
+    /// <summary>
+    /// Translate the speech to English using the <c>&lt;|translate|&gt;</c>
+    /// task token.
+    /// </summary>
+    Translate
+}
+
+/// <summary>
 /// Loaded Whisper model sessions that can run repeated transcription without
 /// reloading the ONNX files from disk.
 /// </summary>
@@ -78,8 +97,14 @@ public sealed class WhisperContext : IDisposable
     /// </summary>
     /// <param name="voice">WAV PCM16 audio bytes.</param>
     /// <param name="defaultLanguage">Default language code, for example <c>en</c>.</param>
-    /// <returns>The decoded transcription text.</returns>
-    public string Detect(byte[] voice, string defaultLanguage)
+    /// <param name="task">
+    /// Decoder task. <see cref="WhisperTask.Transcribe"/> (default) keeps the spoken
+    /// language, <see cref="WhisperTask.Translate"/> asks the decoder for an English
+    /// translation and only works on models that kept the translation task (for example
+    /// whisper-large-v3; the turbo fine-tune is transcription-only).
+    /// </param>
+    /// <returns>The decoded transcription or translation text.</returns>
+    public string Detect(byte[] voice, string defaultLanguage, WhisperTask task = WhisperTask.Transcribe)
     {
         config.DefaultLanguage = string.IsNullOrWhiteSpace(defaultLanguage) ? "" : defaultLanguage;
 
@@ -101,14 +126,32 @@ public sealed class WhisperContext : IDisposable
             ? (string.IsNullOrWhiteSpace(config.DefaultLanguage) ? null : config.DefaultLanguage)
             : config.Language;
 
-        var tokenIds = new List<long> { config.Sot };
-        if (!string.IsNullOrWhiteSpace(language) &&
-            config.Languages.TryGetValue(language, out long languageToken))
+        long? languageToken = null;
+        if (!string.IsNullOrWhiteSpace(language) && config.Languages.TryGetValue(language, out long configuredLanguage))
         {
-            tokenIds.Add(languageToken);
+            languageToken = configuredLanguage;
+        }
+        else if (language == null)
+        {
+            // Whisper prompts carry a language token right after <|sot|>; without one the
+            // decoder may drift to English for non-English speech, so auto mode detects
+            // the language from the encoder states instead.
+            languageToken = DetectLanguage(encoderHiddenStates);
         }
 
-        tokenIds.Add(config.Transcribe);
+        // <|translate|> sits immediately before <|transcribe|> in Whisper multilingual
+        // tokenizers, so configs without the explicit token still work.
+        long taskToken = task is WhisperTask.Translate
+            ? (config.Translate > 0 ? config.Translate : config.Transcribe - 1)
+            : config.Transcribe;
+
+        var tokenIds = new List<long> { config.Sot };
+        if (languageToken.HasValue)
+        {
+            tokenIds.Add(languageToken.Value);
+        }
+
+        tokenIds.Add(taskToken);
         tokenIds.Add(config.NoTime);
         int promptTokenCount = tokenIds.Count;
 
@@ -129,6 +172,46 @@ public sealed class WhisperContext : IDisposable
         }
 
         return Whisper.DecodeTokens(tokenIds.Skip(promptTokenCount), config).Trim();
+    }
+
+    /// <summary>
+    /// Picks the most likely language token from the decoder logits after
+    /// <c>&lt;|sot|&gt;</c>, mirroring Whisper's own language detection pass.
+    /// </summary>
+    long? DetectLanguage(DenseTensor<float> encoderHiddenStates)
+    {
+        if (config.Languages.Count == 0)
+            return null;
+
+        var inputIds = new DenseTensor<long>(new[] { (long)config.Sot }, new[] { 1, 1 });
+        using var decoderResults = decoderSession.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor(config.DecoderInput, inputIds),
+            NamedOnnxValue.CreateFromTensor(config.DecoderEncoderInput, encoderHiddenStates)
+        });
+
+        var logits = Whisper.GetTensor(decoderResults, config.DecoderOutput).AsTensor<float>();
+        var values = logits.ToArray();
+        int vocabSize = logits.Dimensions[^1];
+        int offset = values.Length - vocabSize;
+
+        long? bestToken = null;
+        float bestValue = float.MinValue;
+
+        foreach (long token in config.Languages.Values)
+        {
+            if (token < 0 || token >= vocabSize)
+                continue;
+
+            float value = values[offset + (int)token];
+            if (bestToken is null || value > bestValue)
+            {
+                bestValue = value;
+                bestToken = token;
+            }
+        }
+
+        return bestToken;
     }
 
     public void Dispose()

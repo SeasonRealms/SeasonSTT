@@ -20,13 +20,14 @@ public static class Whisper
     /// <param name="decoderPath">Path to the decoder ONNX model.</param>
     /// <param name="voice">WAV PCM16 audio bytes.</param>
     /// <param name="defaultLanguage">Default language code, for example <c>en</c>.</param>
+    /// <param name="task">Decoder task, <see cref="WhisperTask.Transcribe"/> (default) or <see cref="WhisperTask.Translate"/>.</param>
     /// <param name="provider">ONNX Runtime execution provider, for example <c>cpu</c>.</param>
-    /// <returns>The decoded transcription text.</returns>
-    public static string Detect(string jsonPath, string encoderPath, string encoderDataPath, string decoderPath, byte[] voice, string defaultLanguage, string provider = "cpu")
+    /// <returns>The decoded transcription or translation text.</returns>
+    public static string Detect(string jsonPath, string encoderPath, string encoderDataPath, string decoderPath, byte[] voice, string defaultLanguage, WhisperTask task = WhisperTask.Transcribe, string provider = "cpu")
     {
         using var context = WhisperContext.Load(jsonPath, encoderPath, encoderDataPath, decoderPath, provider);
 
-        return context.Detect(voice, defaultLanguage);
+        return context.Detect(voice, defaultLanguage, task);
     }
 
     internal static Config LoadConfig(string path)
@@ -389,6 +390,10 @@ public static class Whisper
         public int Sot { get; set; }
         public int SotLang { get; set; }
         public int Transcribe { get; set; }
+        // <|translate|> sits immediately before <|transcribe|> in Whisper multilingual
+        // tokenizers; 0 means the config omits it and the caller falls back to
+        // Transcribe - 1.
+        public int Translate { get; set; }
         public int NoTime { get; set; }
         public int Eot { get; set; }
         public int TimeBegin { get; set; }
